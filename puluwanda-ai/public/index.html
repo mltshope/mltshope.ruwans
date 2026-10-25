@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="si">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Puluwanda AI</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1b1f24; --muted: #667085;
+    --border: #e4e7ec; --accent: #0f766e; --accent-text: #ffffff;
+    --ok: #12805c; --warn: #b54708; --err: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #171b21; --text: #e6e8eb; --muted: #98a2b3;
+      --border: #2a3039; --accent: #2dd4bf; --accent-text: #062b27;
+      --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", "Noto Sans Sinhala", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .qr { width: 200px; max-width: 100%; margin-top: 8px; background: #fff; padding: 6px; border-radius: 8px; }
+  .code { font: 600 20px/1 ui-monospace, monospace; letter-spacing: 2px; margin: 8px 0; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 9px 14px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  button:disabled { opacity: .6; cursor: wait; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+  select, input[type=text] { font: inherit; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  input[type=text] { flex: 1; min-width: 180px; }
+  #output { margin-top: 16px; white-space: normal; overflow-wrap: anywhere; }
+  #output h3 { font-size: 15px; margin: 14px 0 6px; }
+  #output ul { padding-left: 20px; margin: 6px 0; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Puluwanda AI</h1>
+  <p class="sub">WhatsApp + Outlook update — AI eken kiyawala denawa</p>
+
+  <div class="grid">
+    <section class="card" id="wa-card"><h2>WhatsApp</h2><div id="wa">…</div></section>
+    <section class="card" id="ol-card"><h2>Outlook</h2><div id="ol">…</div></section>
+    <section class="card"><h2>AI (Claude)</h2><div id="ai">…</div></section>
+  </div>
+
+  <div class="row">
+    <button id="update-btn">Update ekak denna</button>
+    <select id="hours" aria-label="Lookback">
+      <option value="6">Last 6 hours</option>
+      <option value="12">Last 12 hours</option>
+      <option value="24" selected>Last 24 hours</option>
+      <option value="72">Last 3 days</option>
+    </select>
+    <select id="lang" aria-label="Language">
+      <option>Sinhala</option>
+      <option>Singlish</option>
+      <option>English</option>
+    </select>
+    <label class="muted"><input type="checkbox" id="auto"> Auto update every 30 min</label>
+  </div>
+
+  <form class="row" id="ask-form">
+    <input type="text" id="question" placeholder="Prashnayak ahanna… (e.g. Kawda mata salli ewanna kiwwe?)">
+    <button type="submit" class="secondary">Ahanna</button>
+  </form>
+
+  <section class="card" id="output" hidden></section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Minimal markdown: headings, bold, bullet lists, paragraphs. Input is escaped first.
+function renderMarkdown(md) {
+  const lines = esc(md).split("\n");
+  let html = "", inList = false;
+  for (const raw of lines) {
+    const line = raw.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    const bullet = line.match(/^\s*[-*•]\s+(.*)/);
+    if (bullet) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${bullet[1]}</li>`;
+      continue;
+    }
+    if (inList) { html += "</ul>"; inList = false; }
+    const heading = line.match(/^#{1,6}\s+(.*)/);
+    if (heading) html += `<h3>${heading[1]}</h3>`;
+    else if (line.trim()) html += `<p>${line}</p>`;
+  }
+  return html + (inList ? "</ul>" : "");
+}
+
+async function refreshStatus() {
+  const s = await fetch("/api/status").then((r) => r.json());
+
+  const wa = s.whatsapp;
+  $("wa").innerHTML = {
+    ready: `<span class="pill ok">Connected</span>`,
+    qr: `<span class="pill warn">Scan QR</span><p class="muted">Phone eke WhatsApp → Settings → Linked devices → Link a device</p><img class="qr" alt="WhatsApp QR code" src="${wa.qrDataUrl}">`,
+    starting: `<span class="pill warn">Starting…</span>`,
+  }[wa.status] || `<span class="pill err">${esc(wa.status)}</span><p class="muted">${esc(wa.error || "")}</p>`;
+
+  const ol = s.outlook;
+  if (ol.status === "ready") {
+    $("ol").innerHTML = `<span class="pill ok">Signed in</span><p class="muted">${esc(ol.user)}</p><button class="secondary" onclick="outlookLogout()">Sign out</button>`;
+  } else if (ol.status === "awaiting_code") {
+    $("ol").innerHTML = `<span class="pill warn">Waiting for sign-in</span><p class="muted">Open <a href="${esc(ol.verificationUri)}" target="_blank" rel="noopener">${esc(ol.verificationUri)}</a> and enter:</p><div class="code">${esc(ol.userCode)}</div>`;
+  } else if (ol.status === "not_configured") {
+    $("ol").innerHTML = `<span class="pill err">Not configured</span><p class="muted">Set MS_CLIENT_ID in .env (see README).</p>`;
+  } else {
+    $("ol").innerHTML = `<span class="pill warn">Signed out</span>${ol.error ? `<p class="muted">${esc(ol.error)}</p>` : ""}<div class="row" style="margin-top:8px"><button onclick="outlookLogin(this)">Sign in to Outlook</button></div>`;
+  }
+
+  $("ai").innerHTML = s.ai.configured
+    ? `<span class="pill ok">Ready</span><p class="muted">Model: Claude Opus 5.5</p>`
+    : `<span class="pill err">No API key</span><p class="muted">Set ANTHROPIC_API_KEY in .env</p>`;
+}
+
+async function outlookLogin(btn) {
+  btn.disabled = true;
+  await fetch("/api/outlook/login", { method: "POST" });
+  refreshStatus();
+}
+async function outlookLogout() {
+  await fetch("/api/outlook/logout", { method: "POST" });
+  refreshStatus();
+}
+
+async function getUpdate(question) {
+  const out = $("output");
+  const buttons = document.querySelectorAll("button");
+  buttons.forEach((b) => (b.disabled = true));
+  out.hidden = false;
+  out.innerHTML = `<p class="muted">Messages kiyawanawa… (30–60 seconds wage yanna puluwan)</p>`;
+  try {
+    const res = await fetch("/api/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lookbackHours: $("hours").value, language: $("lang").value, question }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error([data.error, ...(data.details || [])].join(" — "));
+    const meta = `${data.counts.whatsappChats} WhatsApp chats · ${data.counts.emails} emails · ${new Date(data.generatedAt).toLocaleTimeString()}`;
+    const warn = data.errors.length ? `<p class="warn">${esc(data.errors.join(" · "))}</p>` : "";
+    out.innerHTML = `<p class="muted">${meta}</p>${warn}${renderMarkdown(data.text)}`;
+  } catch (err) {
+    out.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+$("update-btn").onclick = () => getUpdate();
+$("ask-form").onsubmit = (e) => {
+  e.preventDefault();
+  const q = $("question").value.trim();
+  if (q) getUpdate(q);
+};
+
+let autoTimer = null;
+$("auto").onchange = (e) => {
+  clearInterval(autoTimer);
+  if (e.target.checked) autoTimer = setInterval(() => getUpdate(), 30 * 60 * 1000);
+};
+
+refreshStatus();
+setInterval(refreshStatus, 4000);
+</script>
+</body>
+</html>
